@@ -38,6 +38,8 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
     DT_INST_PROP_OR(n, debounce_period, DT_INST_PROP(n, debounce_press_ms))
 #endif
 
+#define INST_IS_PRESSED_LEN(n) DT_INST_PROP_LEN(n, is_pressed)
+
 #if CONFIG_ZMK_KSCAN_DEBOUNCE_RELEASE_MS >= 0
 #define INST_DEBOUNCE_RELEASE_MS(n) CONFIG_ZMK_KSCAN_DEBOUNCE_RELEASE_MS
 #else
@@ -67,6 +69,11 @@ struct kscan_matrix_irq_callback {
     struct gpio_callback callback;
 };
 
+struct kscan_matrix_is_pressed {
+    const size_t length;
+    const uint8_t *matrix;
+};
+
 struct kscan_matrix_data {
     const struct device *dev;
     struct kscan_gpio_list inputs;
@@ -93,6 +100,7 @@ struct kscan_matrix_config {
     int32_t debounce_scan_period_ms;
     int32_t poll_period_ms;
     enum kscan_diode_direction diode_direction;
+    struct kscan_matrix_is_pressed *is_pressed;
 };
 
 /**
@@ -238,11 +246,14 @@ static int kscan_matrix_read(const struct device *dev) {
             const struct kscan_gpio *in_gpio = &data->inputs.gpios[j];
 
             const int index = state_index_io(config, in_gpio->index, out_gpio->index);
-            const int active = kscan_gpio_pin_get(in_gpio, &state);
+            int active = kscan_gpio_pin_get(in_gpio, &state);
             if (active < 0) {
                 LOG_ERR("Failed to read port %s: %i", in_gpio->spec.port->name, active);
                 return active;
             }
+           if (config->is_pressed->length != 0) {
+               active = !(active ^ config->is_pressed->matrix[index]);
+           }
 
             zmk_debounce_update(&data->matrix_state[index], active, config->debounce_scan_period_ms,
                                 &config->debounce_config);
@@ -497,7 +508,14 @@ static const struct kscan_driver_api kscan_matrix_api = {
                  "ZMK_KSCAN_DEBOUNCE_PRESS_MS or debounce-press-ms is too large");                 \
     BUILD_ASSERT(INST_DEBOUNCE_RELEASE_MS(n) <= DEBOUNCE_COUNTER_MAX,                              \
                  "ZMK_KSCAN_DEBOUNCE_RELEASE_MS or debounce-release-ms is too large");             \
+    BUILD_ASSERT(INST_IS_PRESSED_LEN(n) == INST_MATRIX_LEN(n) || INST_IS_PRESSED_LEN(n) == 0,      \
+                 "is-pressed does not have the right number of values.");                         \
                                                                                                    \
+    static uint8_t is_pressed_data_##n[] = DT_INST_PROP(n, is_pressed);                            \
+    static struct kscan_matrix_is_pressed kscan_matrix_is_pressed_##n = {                          \
+        .length = INST_IS_PRESSED_LEN(n),                                                          \
+        .matrix = is_pressed_data_##n,                                                             \
+    };                                                                                             \
     static struct kscan_gpio kscan_matrix_rows_##n[] = {                                           \
         LISTIFY(INST_ROWS_LEN(n), KSCAN_GPIO_ROW_CFG_INIT, (, ), n)};                              \
                                                                                                    \
@@ -528,8 +546,8 @@ static const struct kscan_driver_api kscan_matrix_api = {
         .debounce_scan_period_ms = DT_INST_PROP(n, debounce_scan_period_ms),                       \
         .poll_period_ms = DT_INST_PROP(n, poll_period_ms),                                         \
         .diode_direction = INST_DIODE_DIR(n),                                                      \
+       .is_pressed = &kscan_matrix_is_pressed_##n,                                                 \
     };                                                                                             \
-                                                                                                   \
     PM_DEVICE_DT_INST_DEFINE(n, kscan_matrix_pm_action);                                           \
                                                                                                    \
     DEVICE_DT_INST_DEFINE(n, &kscan_matrix_init, PM_DEVICE_DT_INST_GET(n), &kscan_matrix_data_##n, \
